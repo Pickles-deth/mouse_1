@@ -1,4 +1,4 @@
 streamlit
 pandas
 pillow
-streamlit-gsheets
+git+https://github.com/streamlit/gsheets-connection
