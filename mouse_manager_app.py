@@ -1,101 +1,114 @@
 import streamlit as st
-from streamlit_gsheets import GSheetsConnection
-from datetime import datetime
 import pandas as pd
-import io, os, zipfile
+import os
+import zipfile
+from datetime import datetime
 from PIL import Image
+from io import BytesIO
 
-st.set_page_config(page_title="マウス耳写真管理", layout="wide")
+# --------------------------
+# 基本設定
+# --------------------------
+st.set_page_config(page_title="🐭 マウス耳写真管理アプリ", layout="wide")
 st.title("🐭 マウス耳写真管理アプリ")
 
-# Google Sheets接続（個人認証だけでOK）
-conn = st.connection("gsheets", type=GSheetsConnection)
+# Google Sheets 設定（CSV読み取りのみ）
+SHEET_ID = "1m90P_Xfvtu8JJmUjQyNOylQ68Uvf151gjhzYxknjoW4"  # あなたのシートID
+SHEET_NAME = "Sheet1"
+GSHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={SHEET_NAME}"
 
-# データを読み込み（存在しない場合は空データ作成）
-df = conn.read(worksheet="Sheet1", ttl=5)
-if df.empty:
-    df = pd.DataFrame(columns=["mouse_id", "remark", "date_added"])
+# --------------------------
+# Google Sheets 読み込み
+# --------------------------
+@st.cache_data(ttl=60)
+def load_data():
+    try:
+        df = pd.read_csv(GSHEET_URL)
+    except Exception as e:
+        st.warning(f"Google Sheetsを読み込めませんでした。空データを使用します。({e})")
+        df = pd.DataFrame(columns=["mouse_id", "remark", "left_photo", "right_photo", "date"])
+    return df
 
-# --- 新規登録 ---
-st.subheader("🧬 新規マウス登録")
-new_mouse = st.text_input("マウス番号", placeholder="例: 001")
-remark = st.text_input("備考", placeholder="例: 系統・特徴など")
+df = load_data()
 
-if st.button("登録"):
-    if new_mouse and new_mouse not in df["mouse_id"].values:
-        new_row = pd.DataFrame({
-            "mouse_id": [new_mouse],
-            "remark": [remark],
-            "date_added": [datetime.now().strftime("%Y-%m-%d")]
-        })
-        df = pd.concat([df, new_row], ignore_index=True)
-        conn.update(worksheet="Sheet1", data=df)
-        st.success(f"マウス {new_mouse} を登録しました！")
-        st.experimental_rerun()
-    elif new_mouse in df["mouse_id"].values:
-        st.warning("すでに登録済みです。")
+# --------------------------
+# データ保存用ディレクトリ
+# --------------------------
+os.makedirs("uploads", exist_ok=True)
+today_folder = os.path.join("uploads", datetime.now().strftime("%Y%m%d"))
+os.makedirs(today_folder, exist_ok=True)
 
-# --- 削除 ---
-delete_mouse = st.selectbox("削除するマウスを選択", [""] + list(df["mouse_id"]))
-if st.button("削除"):
-    if delete_mouse:
-        df = df[df["mouse_id"] != delete_mouse]
-        conn.update(worksheet="Sheet1", data=df)
-        st.warning(f"マウス {delete_mouse} を削除しました。")
-        st.experimental_rerun()
+# --------------------------
+# マウス登録フォーム
+# --------------------------
+st.subheader("🧬 新しいマウスを登録")
+with st.form("register_form"):
+    new_id = st.text_input("マウス番号（例: M001）")
+    remark = st.text_input("備考（任意）")
+    submitted = st.form_submit_button("登録")
 
-st.divider()
+    if submitted and new_id:
+        new_row = {"mouse_id": new_id, "remark": remark, "left_photo": "", "right_photo": "", "date": datetime.now().strftime("%Y-%m-%d")}
+        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+        st.success(f"マウス {new_id} を登録しました！")
+    elif submitted:
+        st.warning("マウス番号を入力してください。")
 
-# --- 一覧と写真アップロード ---
-st.subheader("📋 登録済みマウス一覧")
+# --------------------------
+# マウス一覧と写真アップロード
+# --------------------------
+st.subheader("📸 マウス写真アップロード")
 
-if df.empty:
-    st.info("まだ登録されていません。")
+if len(df) == 0:
+    st.info("まだ登録されたマウスがありません。上で新規登録してください。")
 else:
-    today = datetime.now().strftime("%Y-%m-%d")
-    base_dir = "mice_data"
-    os.makedirs(base_dir, exist_ok=True)
-    today_dir = os.path.join(base_dir, today)
-    os.makedirs(today_dir, exist_ok=True)
+    for i, row in df.iterrows():
+        with st.expander(f"🐁 {row['mouse_id']} - {row['remark']}"):
+            col1, col2 = st.columns(2)
 
-    for _, row in df.iterrows():
-        mid = row["mouse_id"]
-        with st.expander(f"🐭 マウス {mid}"):
-            st.write(f"📅 登録日: {row['date_added']}")
-            st.write(f"📝 備考: {row['remark']}")
+            with col1:
+                st.write("左耳写真")
+                left_photo = st.file_uploader(f"{row['mouse_id']} 左耳", type=["jpg", "jpeg", "png"], key=f"left_{i}")
+                if left_photo:
+                    left_path = os.path.join(today_folder, f"{row['mouse_id']}_left.jpg")
+                    Image.open(left_photo).save(left_path)
+                    df.at[i, "left_photo"] = left_path
+                    st.image(left_path, width=200)
 
-            mdir = os.path.join(today_dir, mid)
-            os.makedirs(mdir, exist_ok=True)
-            colL, colR = st.columns(2)
+            with col2:
+                st.write("右耳写真")
+                right_photo = st.file_uploader(f"{row['mouse_id']} 右耳", type=["jpg", "jpeg", "png"], key=f"right_{i}")
+                if right_photo:
+                    right_path = os.path.join(today_folder, f"{row['mouse_id']}_right.jpg")
+                    Image.open(right_photo).save(right_path)
+                    df.at[i, "right_photo"] = right_path
+                    st.image(right_path, width=200)
 
-            for side, col in zip(["左", "右"], [colL, colR]):
-                with col:
-                    up = st.file_uploader(f"{side}耳", type=["jpg","jpeg","png"], key=f"{mid}_{side}")
-                    if up:
-                        path = os.path.join(mdir, f"{mid}_{side}.jpg")
-                        img = Image.open(up)
-                        img.save(path)
-                        st.image(img, caption=f"{mid}_{side}.jpg", use_container_width=True)
-                        st.success(f"{side}耳を保存しました！")
+# --------------------------
+# ZIPダウンロード機能
+# --------------------------
+st.subheader("📦 今日のデータをまとめてダウンロード")
 
-            left = os.path.join(mdir, f"{mid}_左.jpg")
-            right = os.path.join(mdir, f"{mid}_右.jpg")
-            if os.path.exists(left) and os.path.exists(right):
-                st.success("✅ 両耳そろいました！")
+zip_filename = f"mouse_photos_{datetime.now().strftime('%Y%m%d')}.zip"
+zip_path = os.path.join(today_folder, zip_filename)
 
-st.divider()
+if st.button("ZIPファイルを作成"):
+    with zipfile.ZipFile(zip_path, "w") as zipf:
+        for file in os.listdir(today_folder):
+            if file.endswith((".jpg", ".jpeg", ".png")):
+                zipf.write(os.path.join(today_folder, file), file)
+    st.success("ZIPファイルを作成しました！")
 
-# --- ZIPダウンロード ---
-st.subheader("📦 本日分をまとめてダウンロード")
+    with open(zip_path, "rb") as f:
+        st.download_button(
+            label="📥 ZIPをダウンロード",
+            data=f,
+            file_name=zip_filename,
+            mime="application/zip"
+        )
 
-if os.path.exists(today_dir) and os.listdir(today_dir):
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for root, _, files in os.walk(today_dir):
-            for f in files:
-                path = os.path.join(root, f)
-                zf.write(path, os.path.relpath(path, today_dir))
-    buffer.seek(0)
-    st.download_button("📥 今日のZIPをダウンロード", buffer, file_name=f"mice_{today}.zip")
-else:
-    st.info("今日の写真データはまだありません。")
+# --------------------------
+# フッター
+# --------------------------
+st.markdown("---")
+st.caption("© 2025 Mouse Manager | Streamlit + Google Sheets")
